@@ -1,3 +1,11 @@
+# ETC
+.vscode/
+test_read_vector.c
+
+# Output files
+*.dat
+*.png
+
 # Prerequisites
 *.d
 
