@@ -47,13 +47,17 @@ int main(){
     mpi_start = MPI_Wtime(); start = clock();
 
     if (my_rank == 1) {
-        snprintf(message, BUFFER_SIZE, "Hello from process %d", my_rank);
-        MPI_Send(message, BUFFER_SIZE, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
-        printf("Process %d sent message: %s\n", my_rank, message);
+        if (message[0] != '\0'){
+            snprintf(message, BUFFER_SIZE, "Got you from process %d", my_rank);
+            MPI_Send(message, BUFFER_SIZE, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+            printf("Process %d sent message: %s\n", my_rank, message);
+        }
     } else {
-        MPI_Recv(message, BUFFER_SIZE, MPI_CHAR, 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        printf("Process %d received message: %s\n", my_rank, message);
-        printf("Pong!\n");
+        if (message[0] != '\0'){
+            MPI_Recv(message, BUFFER_SIZE, MPI_CHAR, 1, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            printf("Process %d received back message: %s\n", my_rank, message);
+            printf("Pong!\n");
+        }
     }
 
     mpi_end = MPI_Wtime(); end = clock();
