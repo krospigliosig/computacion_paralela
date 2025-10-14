@@ -3,84 +3,110 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 
 typedef struct node{
     int val;
     struct node* next;
-    pthread_rwlock_t lock;
 } node;
+
+typedef struct {
+    double insert_pct;
+    double delete_pct;
+    double search_pct;
+} op_ratio_t;
+
+op_ratio_t ratios = {0.1, 0.1, 0.8};
 
 node* root = NULL;
 pthread_rwlock_t root_lock = PTHREAD_RWLOCK_INITIALIZER;
 
-int thread_count;
+int thread_count = 1;
 int total_ops = 1000;
 
 void Insert(int val);
 void Delete(int val);
-node* Search(int val);
+bool Search(int val);
 void Destroy_list();
 
 void* worker(void* arg){
     int id = *(int*)arg;
+    unsigned int seed = (unsigned int)time(NULL) ^ (unsigned int)(id * 7919);
 
     for (int i = 0; i < total_ops; ++i){
-        int v = rand() % 10000;
-        int op = rand() % 3;
+        int v = rand_r(&seed) % 10000;
+        double r = (double)rand_r(&seed) / RAND_MAX;
 
-        if (op == 0) Insert(v);
-        else if (op == 1) Search(v);
-        else Delete(v);
+        if (r < ratios.insert_pct)
+            Insert(v);
+        else if (r < ratios.insert_pct + ratios.search_pct)
+            Search(v);
+        else
+            Delete(v);
     }
 
     return NULL;
 }
 
 int main(int argc, char* argv[]){
-    srand(time(NULL));
+    if (argc < 2){
+        fprintf(stderr, "Uso: %s <thread_count>\n", argv[0]);
+        return 1;
+    }
 
-    thread_count = strtol(argv[1], NULL, 10);
+    thread_count = (int)strtol(argv[1], NULL, 10);
+    if (thread_count <= 0) thread_count = 1;
 
-    pthread_t threads[thread_count];
-    int ids[thread_count];
+    pthread_t* threads = malloc(sizeof(pthread_t) * thread_count);
+    int* ids = malloc(sizeof(int) * thread_count);
 
     struct timespec start, finish;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
     for (int i = 0; i < thread_count; ++i){
         ids[i] = i;
-        pthread_create(&threads[i], NULL, worker, &ids[i]);
+        if (pthread_create(&threads[i], NULL, worker, &ids[i]) != 0){
+            perror("pthread_create");
+            return 1;
+        }
     }
-    for (int i = 0; i < thread_count; ++i)
+    for (int i = 0; i < thread_count; ++i){
         pthread_join(threads[i], NULL);
+    }
 
     clock_gettime(CLOCK_MONOTONIC, &finish);
     double secs = (finish.tv_sec - start.tv_sec) + (finish.tv_nsec - start.tv_nsec) / 1e9;
 
-    printf("Tiempo total: %.3f s\n", secs);
+    printf("Tiempo total: %e s\n", secs);
+
+    Destroy_list();
+    free(threads);
+    free(ids);
 
     pthread_rwlock_destroy(&root_lock);
-    Destroy_list();
     return 0;
 }
 
 node* Create_node(int val){
     node* new_node = malloc(sizeof(node));
-    
-    new_node->val = val;
-    pthread_rwlock_init(&new_node->lock, NULL);
-    new_node->next = NULL;
+    if (!new_node) {
+        perror("malloc");
+        exit(1);
+    }
 
+    new_node->val = val;
+    new_node->next = NULL;
     return new_node;
 }
 
 void Destroy_node(node* n){
-    pthread_rwlock_destroy(&n->lock);
     free(n);
 }
 
 void Destroy_list(){
+    pthread_rwlock_wrlock(&root_lock);
     node* curr = root;
+
     while (curr != NULL){
         node* next = curr->next;
         Destroy_node(curr);
@@ -88,122 +114,85 @@ void Destroy_list(){
     }
 
     root = NULL;
+    pthread_rwlock_unlock(&root_lock);
 }
 
 void Insert(int val){
     pthread_rwlock_wrlock(&root_lock);
 
-    if (root == NULL){
-        root = Create_node(val);
+    if (root == NULL || root->val > val){
+        node* temp = Create_node(val);
+
+        temp->next = root;
+        root = temp;
+
         pthread_rwlock_unlock(&root_lock);
         return;
     }
 
-    pthread_rwlock_rdlock(&root->lock);
-    pthread_rwlock_unlock(&root_lock);
+    node* prev = root;
+    node* curr = root->next;
 
-    node* curr = root;
-    node* prev = NULL;
-
-    while(curr != NULL){
-        pthread_rwlock_rdlock(&curr->lock);
-
-        if(curr->val > val) break;
-
+    while (curr != NULL && curr->val <= val){
         prev = curr;
         curr = curr->next;
-
-        if (curr) pthread_rwlock_rdlock(&curr->lock);
-        if (prev) pthread_rwlock_unlock(&prev->lock);
     }
 
     node* temp = Create_node(val);
     temp->next = curr;
+    prev->next = temp;
 
-    if (prev == NULL) {
-        pthread_rwlock_wrlock(&root_lock);
-        temp->next = root;
-        root = temp;
-        pthread_rwlock_unlock(&root_lock);
-    }
-    else {
-        pthread_rwlock_wrlock(&prev->lock);
-        prev->next = temp;
-        pthread_rwlock_unlock(&prev->lock);
-    }
-
-    if (curr) pthread_rwlock_unlock(&curr->lock);
+    pthread_rwlock_unlock(&root_lock);
 }
 
-node* Search(int val){
+bool Search(int val){
     pthread_rwlock_rdlock(&root_lock);
 
     node* curr = root;
-
-    if (curr) pthread_rwlock_rdlock(&curr->lock);
-    pthread_rwlock_unlock(&root_lock);
-
     while (curr != NULL){
-        if (curr->val == val) {
-            pthread_rwlock_unlock(&curr->lock);
-            return curr;
-        } 
-
+        if (curr->val == val){
+            pthread_rwlock_unlock(&root_lock);
+            return true;
+        }
         else if (curr->val > val) break;
 
-        node* next = curr->next;
-
-        if (next) pthread_rwlock_rdlock(&next->lock);
-        pthread_rwlock_unlock(&curr->lock);
-
-        curr = next;
+        curr = curr->next;
     }
 
-    if (curr) pthread_rwlock_unlock(&curr->lock);
-    return NULL;
+    pthread_rwlock_unlock(&root_lock);
+    return false;
 }
 
 void Delete(int val){
     pthread_rwlock_wrlock(&root_lock);
-    
+
     if (root == NULL){
         pthread_rwlock_unlock(&root_lock);
         return;
     }
 
-    pthread_rwlock_rdlock(&root->lock);
-    pthread_rwlock_unlock(&root_lock);
+    if (root->val == val){
+        node* to_free = root;
+        root = root->next;
 
-    node* curr = root;
-    node* prev = NULL;
+        Destroy_node(to_free);
+        pthread_rwlock_unlock(&root_lock);
 
-    while (curr != NULL){
-        pthread_rwlock_wrlock(&curr->lock);
-        if (curr->val == val) {
-            if (prev == NULL){
-                pthread_rwlock_wrlock(&root_lock);
-                root = curr->next;
-                pthread_rwlock_unlock(&root_lock);
-            }
-            else {
-                pthread_rwlock_wrlock(&prev->lock);
-                prev->next = curr->next;
-                pthread_rwlock_unlock(&prev->lock);
-            }
+        return;
+    }
 
-            pthread_rwlock_unlock(&curr->lock);
-            Destroy_node(curr);
-            return;
-        } 
-        else if (curr->val > val){
-            pthread_rwlock_unlock(&curr->lock);
-            break;
-        }
-        
-        if (prev) pthread_rwlock_unlock(&prev->lock);
+    node* prev = root;
+    node* curr = root->next;
+
+    while (curr != NULL && curr->val < val){
         prev = curr;
         curr = curr->next;
     }
 
-    if (prev) pthread_rwlock_unlock(&prev->lock);
+    if (curr != NULL && curr->val == val){
+        prev->next = curr->next;
+        Destroy_node(curr);
+    }
+
+    pthread_rwlock_unlock(&root_lock);
 }
