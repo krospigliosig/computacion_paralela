@@ -16,13 +16,13 @@ typedef struct {
     double search_pct;
 } op_ratio_t;
 
-op_ratio_t ratios = {0.1, 0.1, 0.8};
+op_ratio_t ratios = {0.05, 0.05, 0.9};
 
 node* root = NULL;
 pthread_rwlock_t root_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 int thread_count = 1;
-int total_ops = 1000;
+int total_ops = 10000;
 
 void Insert(int val);
 void Delete(int val);
